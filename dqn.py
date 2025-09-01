@@ -31,20 +31,18 @@ class DQNAgent:
         self.action_size = action_size
         self.memory = deque(maxlen=10000)
         
-        # Hyperparameters tuned for stability
-        self.gamma = 0.99          # Discount factor
-        self.epsilon = 1.0         # Initial exploration rate
+        # --- "GOLDILOCKS" HYPERPARAMETERS for balanced learning ---
+        self.gamma = 0.99
+        self.epsilon = 1.0
         self.epsilon_min = 0.01
-        self.epsilon_decay = 0.999 
-        self.learning_rate = 1e-4  # <<<<< STABILITY CHANGE #1: Lower learning rate
-        self.tau = 1e-3            # For soft update of target parameters
+        self.epsilon_decay = 0.995  # Faster decay
+        self.learning_rate = 2.5e-4 # Balanced learning rate
+        self.tau = 1e-3
         
         self.model = QNetwork(state_size, action_size).to(device)
         self.target_model = QNetwork(state_size, action_size).to(device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
         self.loss_fn = nn.MSELoss()
-        
-        # Initialize target model with same weights as the main model
         self.target_model.load_state_dict(self.model.state_dict())
 
     def soft_update_target_model(self):
@@ -60,7 +58,6 @@ class DQNAgent:
         """Chooses an action using the Epsilon-Greedy policy."""
         if use_epsilon and np.random.rand() <= self.epsilon:
             return random.randrange(self.action_size)
-        
         self.model.eval()
         with torch.no_grad():
             state_tensor = torch.from_numpy(state).float().to(device)
@@ -72,29 +69,24 @@ class DQNAgent:
         """Trains the main model using a random batch of experiences from the buffer."""
         if len(self.memory) < batch_size:
             return
-            
         minibatch = random.sample(self.memory, batch_size)
         states = torch.from_numpy(np.vstack([e[0] for e in minibatch])).float().to(device)
         actions = torch.from_numpy(np.vstack([e[1] for e in minibatch])).long().to(device)
         rewards = torch.from_numpy(np.vstack([e[2] for e in minibatch])).float().to(device)
         next_states = torch.from_numpy(np.vstack([e[3] for e in minibatch])).float().to(device)
         dones = torch.from_numpy(np.vstack([e[4] for e in minibatch]).astype(np.uint8)).float().to(device)
-        
         with torch.no_grad():
             next_q_values = self.target_model(next_states).max(1)[0].unsqueeze(1)
             target_q_values = rewards + (self.gamma * next_q_values * (1 - dones))
-            
         predicted_q_values = self.model(states).gather(1, actions)
         loss = self.loss_fn(predicted_q_values, target_q_values)
         self.optimizer.zero_grad()
         loss.backward()
-        
-        # <<<<< STABILITY CHANGE #2: Gradient Clipping
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-        
         self.optimizer.step()
         self.soft_update_target_model()
         
+        # Only decay epsilon when we actually perform a learning step
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
@@ -107,9 +99,10 @@ if __name__ == "__main__":
     
     EPISODES = 600
     BATCH_SIZE = 64
+    REPLAY_START_SIZE = 1000 # Buffer warm-up period
     
     scores = []
-    scores_window = deque(maxlen=100) # For tracking average score over last 100 episodes
+    scores_window = deque(maxlen=100)
 
     for e in range(1, EPISODES + 1):
         state, _ = env.reset()
@@ -122,7 +115,10 @@ if __name__ == "__main__":
             next_state = np.reshape(next_state, [1, state_size])
             
             agent.remember(state, action, reward, next_state, done)
-            agent.replay(BATCH_SIZE)
+            
+            # Start learning only after the buffer has sufficient experiences
+            if len(agent.memory) > REPLAY_START_SIZE:
+                agent.replay(BATCH_SIZE)
             
             state = next_state
             score += 1
@@ -137,15 +133,14 @@ if __name__ == "__main__":
             print(f'\rEpisode {e}\tAverage Score: {np.mean(scores_window):.2f}')
         if np.mean(scores_window) >= 475.0:
             print(f'\nEnvironment solved in {e:d} episodes!\tAverage Score: {np.mean(scores_window):.2f}')
-            # torch.save(agent.model.state_dict(), 'checkpoint.pth') # Optionally save the model
             break
-
+            
     # === VISUALIZATION 1: Plotting the Learning Curve ===
     plt.figure(figsize=(10, 5))
     plt.plot(scores)
     rolling_avg = [np.mean(scores[max(0, i-100):i+1]) for i in range(len(scores))]
     plt.plot(rolling_avg, color='red', linewidth=3, label='100-episode average')
-    plt.title("Stable DQN Agent Performance on CartPole")
+    plt.title("Balanced DQN Agent Performance")
     plt.xlabel("Episode")
     plt.ylabel("Score (Timesteps Survived)")
     plt.grid(True)
@@ -181,7 +176,7 @@ if __name__ == "__main__":
     plt.figure(figsize=(10, 8))
     plt.imshow(policy_map.T, extent=[-0.2095, 0.2095, -2.0, 2.0], aspect='auto', origin='lower')
     plt.colorbar(ticks=[0, 1], label="Action (0=Left, 1=Right)")
-    plt.title("Policy Landscape for Stable CartPole Agent")
+    plt.title("Policy Landscape for Balanced CartPole Agent")
     plt.xlabel("Pole Angle (radians)")
     plt.ylabel("Pole Angular Velocity (rad/s)")
     plt.show()
